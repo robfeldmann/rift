@@ -3494,6 +3494,73 @@ fn auto_workspace_switch_follows_activated_window_when_same_app_is_visible_elsew
     }
 }
 
+/// One app with a focused window on workspace 0 and another on hidden workspace 1.
+fn same_app_split_across_workspaces() -> (Apps, Reactor, SpaceId, WindowId, WindowId) {
+    let (mut apps, mut reactor) = test_context();
+    let space = SpaceId::new(1);
+    let here = WindowId::new(1, 1);
+    let elsewhere = WindowId::new(1, 2);
+
+    reactor.handle_event(space_state_event(
+        vec![CGRect::new(CGPoint::ZERO, CGSize::new(1000., 1000.))],
+        vec![Some(space)],
+    ));
+    apps.make_app_and_settle(&mut reactor, 1, make_windows(2));
+    reactor.send_layout_event(LayoutEvent::WindowFocused(space, elsewhere));
+    reactor.handle_test_layout_command(LayoutCommand::MoveWindowToWorkspace {
+        workspace: WorkspaceSelector::Index(1),
+        follow: false,
+        window_id: None,
+    });
+    apps.simulate_until_quiet(&mut reactor);
+    reactor.handle_test_layout_command(LayoutCommand::SwitchToWorkspace(0));
+    apps.simulate_until_quiet(&mut reactor);
+    reactor.handle_event(Event::ApplicationGloballyActivated(1));
+    reactor.handle_event(Event::WindowServerFocusChanged(here, space));
+    apps.simulate_until_quiet(&mut reactor);
+    assert_eq!(
+        reactor.layout_manager.layout_engine.workspaces().active_workspace_idx(space),
+        Some(0),
+        "focusing a same-app window on the current workspace must not switch"
+    );
+    assert_eq!(reactor.layout_manager.layout_engine.focused_window(), Some(here));
+    (apps, reactor, space, here, elsewhere)
+}
+
+#[test]
+fn focus_moving_within_frontmost_app_follows_window_to_its_workspace() {
+    // cmd+` between two windows of the frontmost app emits no ApplicationActivated,
+    // only a WindowServer focus change; it must still switch to the window's workspace.
+    let (mut apps, mut reactor, space, _, elsewhere) = same_app_split_across_workspaces();
+
+    reactor.handle_event(Event::WindowServerFocusChanged(elsewhere, space));
+    apps.simulate_until_quiet(&mut reactor);
+
+    let workspaces = reactor.layout_manager.layout_engine.workspaces();
+    assert_eq!(
+        workspaces.active_workspace_idx(space),
+        Some(1),
+        "focusing a same-app window on a hidden workspace should switch to that workspace"
+    );
+    assert!(workspaces.is_window_in_active_workspace(&reactor.state.windows, space, elsewhere));
+}
+
+#[test]
+fn closing_focused_window_does_not_follow_fallback_focus_to_hidden_workspace() {
+    // After a close, macOS may focus another window of the same app that is parked on a
+    // hidden workspace. That fallback is not a user switch and must not change workspaces.
+    let (mut apps, mut reactor, space, here, elsewhere) = same_app_split_across_workspaces();
+
+    reactor.handle_event(Event::WindowDestroyed(here));
+    reactor.handle_event(Event::WindowServerFocusChanged(elsewhere, space));
+    apps.simulate_until_quiet(&mut reactor);
+
+    assert_eq!(
+        reactor.layout_manager.layout_engine.workspaces().active_workspace_idx(space),
+        Some(0)
+    );
+}
+
 #[test]
 fn native_focus_race_waits_for_new_window_activation() {
     let (mut apps, mut reactor) = test_context();
