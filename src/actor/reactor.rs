@@ -1527,6 +1527,28 @@ impl Reactor {
                 if !self.state.windows.contains_window(window) {
                     return Ok(EventOutcome::default());
                 }
+                // Focus moved from a focused, live window of the frontmost app to another of
+                // its windows (cmd+`, a window switcher). No ApplicationActivated fires for
+                // the same app, so route the window through the guarded auto-switch an
+                // activation uses; otherwise a window on a hidden workspace is dropped
+                // (#562). Native focus landing on a hidden window for any other reason
+                // (a closed window, another app's focus, a not-yet-registered window) keeps
+                // the visible-replacement path below.
+                let moved_within_app =
+                    self.layout_manager.layout_engine.focused_window().is_some_and(|previous| {
+                        previous.pid == window.pid && self.state.windows.contains_window(previous)
+                    });
+                if moved_within_app
+                    && self.main_window_tracker.is_globally_frontmost(window.pid)
+                    && !self.state.windows.has_pending_window_for_pid(window.pid)
+                {
+                    let mut switch =
+                        self.handle_app_activation_workspace_switch(window.pid, Some(window));
+                    if !switch.layout_responses.is_empty() {
+                        switch.focused_window = Some(window);
+                        return Ok(switch);
+                    }
+                }
                 return Ok(if self.is_space_active(reported_space) {
                     EventOutcome::default()
                         .with_layout_event(LayoutEvent::WindowFocused(reported_space, window))
